@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: zabbix-pv
+spec:
+  storageClassName: manual
+  volumeMode: Filesystem
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteOnce
+  nfs:
+    server: 192.168.20.125
+    path: "/data/mysql"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zabbix-pvc
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zabbix-config
+data:
+  DB_SERVER_HOST: 127.0.0.1
+  NODE-ADDR: 192.168.20.125
+  Timezone: America/Sao_Paulo
+  MSQL-ND-PRT: "30306"
+  ZBX-ND-PRT: "31051"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zabbix-secret
+type: Opaque
+data:
+  DB_USER: cm9vdA==
+  DB_PWD: MTIzcXdl
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-eng
+  labels:
+    app: zabbix
+    zone: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: zabbix
+      zone: backend
+  template:
+    metadata:
+      labels:
+        app: zabbix
+        zone: backend
+    spec:
+      containers:
+      - name: mysql-server
+        image: mysql
+        ports:
+          - name: mysql-port
+            containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: zabbix-secret
+              key: DB_PWD
+        volumeMounts:
+          - mountPath: /var/lib/mysql
+            name: base-mysql
+      - name: zabbix-srv
+        image: zabbix/zabbix-server-mysql:centos-5.0-latest
+        ports:
+          - name: zbx-port
+            containerPort: 10051
+        env:
+        - name: DB_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: zabbix-config
+              key: DB_SERVER_HOST
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: zabbix-secret
+              key: DB_USER
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: zabbix-secret
+              key: DB_PWD
+      volumes:
+      - name: base-mysql
+        persistentVolumeClaim:
+                claimName: zabbix-pvc
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-web
+  labels:
+    app: zabbix
+    zone: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: zabbix
+      zone: frontend
+  template:
+    metadata:
+      labels:
+        app: zabbix
+        zone: frontend
+    spec:
+      containers:
+      - name: zabbix-web
+        image: zabbix/zabbix-web-nginx-mysql
+        ports:
+          - name: http-port
+            containerPort: 8080
+        env:
+        - name: ZBX_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: zabbix-config
+              key: NODE-ADDR
+        - name: DB_SERVER_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: zabbix-config
+              key: NODE-ADDR
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: zabbix-secret
+              key: DB_PWD
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: zabbix-secret
+              key: DB_USER
+        - name: ZBX_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: zabbix-config
+              key: ZBX-ND-PRT
+        - name: DB_SERVER_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: zabbix-config
+              key: MSQL-ND-PRT
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zbx-frontend
+spec:
+  type: NodePort
+  ports:
+  - port: 8080
+    nodePort: 32080
+    targetPort: 8080
+  selector:
+    app: zabbix
+    zone: frontend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zbx-backend-db
+spec:
+  type: NodePort
+  ports:
+  - port: 3306
+    nodePort: 30306
+    targetPort: 3306
+  selector:
+    app: zabbix
+    zone: backend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zbx-backend-zbx
+spec:
+  type: NodePort
+  ports:
+  - port: 10051
+    nodePort: 31051
+    targetPort: 10051
+  selector:
+    app: zabbix
+    zone: backend
